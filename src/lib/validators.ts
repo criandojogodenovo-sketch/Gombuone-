@@ -93,3 +93,51 @@ export const loginSchema = z.object({
 // ---------- Upload ----------
 
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024; // 2 MB
+
+// ---------- FASE 2: Atribuição (?ref=) ----------
+
+// Código de referência de distribuidor: alfanumérico, 4–32 caracteres
+// (TESTREF01/TESTREF02 cumprem este formato)
+export const REF_PATTERN = /^[A-Za-z0-9]{4,32}$/;
+
+export const attributionSchema = z.object({
+  opportunitySlug: z
+    .string()
+    .trim()
+    .regex(SLUG_PATTERN, "Slug da oportunidade inválida"),
+  ref: z
+    .string()
+    .trim()
+    .regex(REF_PATTERN, "Código de referência inválido (4–32 caracteres alfanuméricos)"),
+});
+
+// ---------- FASE 2: Resgate do consumidor ----------
+
+// WhatsApp de Angola: +244 seguido de 9 (móvel) + 8 dígitos → +2449XXXXXXXX
+export const WHATSAPP_PATTERN = /^\+2449\d{8}$/;
+
+// Nome: letras unicode, espaços, apóstrofos, hífens e pontos (2–60 caracteres).
+// Rejeita explicitamente <>, tags e payloads — os nomes são exibidos ao
+// comerciante na Fase 3, por isso o charset é restrito à escrita de nomes.
+export const CONSUMER_NAME_PATTERN = /^[\p{L}\p{M}\s'.-]{2,60}$/u;
+
+export const redemptionSchema = z.object({
+  opportunitySlug: z
+    .string()
+    .trim()
+    .regex(SLUG_PATTERN, "Slug da oportunidade inválida"),
+  consumerName: z
+    .string()
+    .trim()
+    .regex(
+      CONSUMER_NAME_PATTERN,
+      "Nome inválido: use apenas letras, espaços, apóstrofos, hífens e pontos (2–60 caracteres)"
+    ),
+  consumerWhatsapp: z
+    .string()
+    .trim()
+    .regex(
+      WHATSAPP_PATTERN,
+      "WhatsApp inválido: use o formato angolano +2449XXXXXXXX (ex.: +244923456789)"
+    ),
+});

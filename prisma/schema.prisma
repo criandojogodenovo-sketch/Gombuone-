@@ -1,8 +1,13 @@
-// GOMBUONE — Fase 1
+// GOMBUONE — Fase 1 + Fase 2
 // Schema Prisma (PostgreSQL / Neon)
 //
 // Nota de consistência (AJUSTE 2): o campo `deviceFingerprint` foi removido do
-// modelo Attribution e será reintroduzido na Fase 2 com design adequado.
+// modelo Attribution e será reintroduzido numa fase posterior com design adequado.
+//
+// FASE 2 (aditivo, sem alterações destrutivas):
+// - User.refCode: código de referência do distribuidor (usado em ?ref=)
+// - Attribution.ip / Attribution.userAgent: capturados no servidor para auditoria
+// - Redemption.consumerName / consumerWhatsapp: identificação do consumidor no resgate
 
 generator client {
   provider = "prisma-client-js"
@@ -53,6 +58,11 @@ model User {
   role      Role     @default(CONSUMER)
   companyId String?
   company   Company? @relation(fields: [companyId], references: [id])
+
+  // FASE 2: código de referência único do distribuidor — aparece no link
+  // público como /oportunidades/<slug>?ref=<refCode>
+  refCode   String?  @unique
+
   createdAt DateTime @default(now())
 
   attributions Attribution[]
@@ -87,11 +97,18 @@ model Attribution {
   distributor    User?       @relation(fields: [distributorId], references: [id])
 
   source         String?     // "whatsapp", "direct", "instagram"
-  // deviceFingerprint removido — será reintroduzido na Fase 2 com design adequado
+  // deviceFingerprint removido — reintrodução adiada para fase posterior
+
+  // FASE 2: contexto do clique capturado NO SERVIDOR (nunca confiado ao cliente)
+  ip             String?     // IP de origem (x-forwarded-for definido pela infraestrutura)
+  userAgent      String?     // User-Agent do pedido
 
   createdAt      DateTime    @default(now())
 
   redemptions    Redemption[]
+
+  @@index([opportunityId, distributorId, ip, createdAt])
+  @@index([distributorId, createdAt])
 }
 
 model Redemption {
@@ -105,12 +122,20 @@ model Redemption {
 
   consumerDevice String?
 
+  // FASE 2: identificação do consumidor no ato do resgate (para o comerciante
+  // validar na Fase 3 e para limites anti-abuso)
+  consumerName      String?
+  consumerWhatsapp  String?
+
   status         RedemptionStatus @default(REDEEMED)
 
   redeemedAt     DateTime         @default(now())
   convertedAt    DateTime?
 
   validation     Validation?
+
+  @@index([consumerWhatsapp])
+  @@index([opportunityId, status])
 }
 
 model Validation {
