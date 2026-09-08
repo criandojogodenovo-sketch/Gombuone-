@@ -1,0 +1,123 @@
+// GOMBUONE — Fase 1
+// Schema Prisma (PostgreSQL / Neon)
+//
+// Nota de consistência (AJUSTE 2): o campo `deviceFingerprint` foi removido do
+// modelo Attribution e será reintroduzido na Fase 2 com design adequado.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OpportunityStatus {
+  DRAFT
+  ACTIVE
+  EXPIRED
+  ARCHIVED
+}
+
+enum RedemptionStatus {
+  REDEEMED
+  CONVERTED
+  CANCELED
+}
+
+enum Role {
+  ADMIN
+  MERCHANT
+  DISTRIBUTOR
+  CONSUMER
+}
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  contactName String?
+  whatsapp    String?
+  pinHash     String   // Hash bcrypt do PIN de 4 dígitos — NUNCA em plaintext
+  createdAt   DateTime @default(now())
+
+  opportunities Opportunity[]
+  users         User[]
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  whatsapp  String?  @unique
+  role      Role     @default(CONSUMER)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+  createdAt DateTime @default(now())
+
+  attributions Attribution[]
+}
+
+model Opportunity {
+  id          String            @id @default(cuid())
+  companyId   String
+  company     Company           @relation(fields: [companyId], references: [id])
+
+  title       String
+  slug        String            @unique
+  description String
+  imageUrl    String            // URL do Vercel Blob (imposição da API de criação)
+  location    String?
+
+  status      OpportunityStatus @default(DRAFT)
+  validUntil  DateTime
+
+  createdAt   DateTime          @default(now())
+
+  attributions Attribution[]
+  redemptions  Redemption[]
+}
+
+model Attribution {
+  id             String      @id @default(cuid())
+  opportunityId  String
+  opportunity    Opportunity @relation(fields: [opportunityId], references: [id])
+
+  distributorId  String?
+  distributor    User?       @relation(fields: [distributorId], references: [id])
+
+  source         String?     // "whatsapp", "direct", "instagram"
+  // deviceFingerprint removido — será reintroduzido na Fase 2 com design adequado
+
+  createdAt      DateTime    @default(now())
+
+  redemptions    Redemption[]
+}
+
+model Redemption {
+  id             String           @id @default(cuid())
+  code           String           @unique
+  opportunityId  String
+  opportunity    Opportunity      @relation(fields: [opportunityId], references: [id])
+
+  attributionId  String?
+  attribution    Attribution?     @relation(fields: [attributionId], references: [id])
+
+  consumerDevice String?
+
+  status         RedemptionStatus @default(REDEEMED)
+
+  redeemedAt     DateTime         @default(now())
+  convertedAt    DateTime?
+
+  validation     Validation?
+}
+
+model Validation {
+  id           String     @id @default(cuid())
+  redemptionId String     @unique
+  redemption   Redemption @relation(fields: [redemptionId], references: [id])
+
+  validatedBy  String?
+  validatedAt  DateTime   @default(now())
+}
