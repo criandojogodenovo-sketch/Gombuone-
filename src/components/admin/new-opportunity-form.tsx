@@ -279,10 +279,15 @@ export function NewOpportunityForm({ companies }: { companies: CompanyOption[] }
       status,
     };
 
-    // Validação instantânea no cliente (mesmo esquema Zod do servidor)
-    const check = createOpportunitySchema.safeParse(payload);
-    if (!check.success) {
-      const first = check.error.issues[0];
+    // Validação instantânea no cliente (mesmo esquema Zod do servidor,
+    // SEM imageUrl — a URL do Blob só existe após o upload; o servidor
+    // valida a imageUrl final de forma autoritativa).
+    const { imageUrl: _placeholder, ...rest } = payload;
+    const clientCheck = createOpportunitySchema
+      .omit({ imageUrl: true })
+      .safeParse(rest);
+    if (!clientCheck.success) {
+      const first = clientCheck.error.issues[0];
       setError(
         `${first?.path.join(".") ? `${first.path.join(".")}: ` : ""}${first?.message}`
       );
