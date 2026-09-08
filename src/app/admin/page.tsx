@@ -153,7 +153,6 @@ export default async function AdminPage() {
                     >
                       <div className="h-14 w-20 shrink-0 overflow-hidden rounded-md border border-stone-200 bg-stone-50">
                         {o.imageUrl ? (
-                          // eslint-disable-next-line @next/next/no-img-element
                           <img
                             src={o.imageUrl}
                             alt={`Imagem da oportunidade ${o.title}`}

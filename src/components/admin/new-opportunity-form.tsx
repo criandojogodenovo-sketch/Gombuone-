@@ -170,8 +170,9 @@ export function NewOpportunityForm({ companies }: { companies: CompanyOption[] }
   // Campos do formulário
   const [companyId, setCompanyId] = useState<string>(companies[0]?.id ?? "");
   const [title, setTitle] = useState("");
-  const [slug, setSlug] = useState("");
-  const [slugTouched, setSlugTouched] = useState(false);
+  // Slug: estado derivado — automática a partir do título até o utilizador editar
+  const [slugManual, setSlugManual] = useState<string | null>(null);
+  const slug = slugManual ?? slugify(title);
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState("");
   const [validUntil, setValidUntil] = useState("");
@@ -186,17 +187,11 @@ export function NewOpportunityForm({ companies }: { companies: CompanyOption[] }
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Slug automático enquanto o utilizador não a editar manualmente
-  useEffect(() => {
-    if (!slugTouched) setSlug(slugify(title));
-  }, [title, slugTouched]);
-
   // Libertar o preview ao desmontar (evita memory leaks)
   useEffect(() => {
     return () => {
       if (image.kind === "ready") URL.revokeObjectURL(image.previewUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onFileChange = useCallback(
@@ -420,11 +415,8 @@ export function NewOpportunityForm({ companies }: { companies: CompanyOption[] }
               <Input
                 id="slug"
                 value={slug}
-                onChange={(e) => {
-                  setSlugTouched(true);
-                  setSlug(e.target.value);
-                }}
-                placeholder="gerada-automatically-do-titulo"
+                onChange={(e) => setSlugManual(e.target.value)}
+                placeholder="gerada-automaticamente-do-titulo"
                 pattern="[a-z0-9]+(-[a-z0-9]+)*"
                 title="Apenas letras minúsculas, números e hífens"
                 required
@@ -564,7 +556,6 @@ export function NewOpportunityForm({ companies }: { companies: CompanyOption[] }
             {image.kind === "ready" && (
               <div className="space-y-3">
                 <div className="overflow-hidden rounded-xl border border-stone-200 bg-white">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={image.previewUrl}
                     alt="Pré-visualização da imagem comprimida"
