@@ -1,28 +1,41 @@
-// GOMBUONE — Fase 2 — POST /api/attributions
+// GOMBUONE — Fase 2 (CORRIGIDA) — POST /api/attributions
 //
 // Registra a atribuição de um clique num link de distribuidor
 // (/oportunidades/<slug>?ref=<refCode>) e emite o cookie de atribuição.
 //
-// COMPORTAMENTO:
-// 1. Valida o corpo (Zod): { opportunitySlug, ref }.
-// 2. A oportunidade tem de existir, estar ACTIVE e não expirada (validUntil).
-//    Rascunhos, expiradas e inexistentes devolvem a MESMA resposta 404
-//    (não há enumeração de oportunidades não publicadas).
-// 3. O `ref` tem de corresponder a um utilizador DISTRIBUTOR existente
-//    (comparação case-insensitive; formato rígido antes da consulta).
-//    Ref inexistente e ref malformado devolvem a MESMA resposta 400
-//    (não há enumeração de códigos de distribuidor).
-// 4. Desduplicação: mesmo (oportunidade, distribuidor, IP) dentro de 7 dias
-//    reutiliza o registo existente (não há spam de linhas).
-// 5. Cookie `gombu_attr` = mapa JSON { opportunityId: attributionId }
-//    (HttpOnly, SameSite=Lax, 30 dias) — o mapa preserva atribuições de
-//    MÚLTIPLAS oportunidades sem sobreposição.
+// POLÍTICA FINAL (fonte de verdade — comando mestre Fase 2):
+// O COOKIE é o ÚNICO mecanismo de desduplicação de Attribution na V1.
+// O IP NUNCA decide se uma Attribution já existe — é capturado apenas para
+// rate limiting, auditoria e investigação de abuso.
 //
-// O ATACANTE NÃO PODE (regras testáveis — ver testes 13–23 e 34–45):
-// - criar atribuições para oportunidades inexistentes/rascunho/expiradas;
+// ORDEM DA LÓGICA (obrigatória):
+//  1. Validar oportunidade (pública: ACTIVE + validUntil futura) → 404 uniforme
+//  2. Validar distribuidor (role DISTRIBUTOR) → 400 uniforme
+//  3. Ler cookie gombu_attr (mapa { opportunityId: attributionId })
+//  4. Procurar o attributionId correspondente a ESTA oportunidade
+//  5. Revalidar no banco: existe + oportunidade corresponde + distribuidor
+//     corresponde (validação tripla — um cookie adulterado nunca gera
+//     crédito para outro distribuidor)
+//  6. Válida → REUTILIZAR | inválida/inexistente → CRIAR nova
+//  7. Atualizar gombu_attr preservando as outras oportunidades
+//  8. Retornar resultado
+//
+// CASOS COBERTOS (spec §4):
+//  A) mesmo cookie + mesma oportunidade          → reutiliza (nunca duplica)
+//  B) novo cookie + mesmo IP + mesma oportunidade → CRIA nova (IP irrelevante)
+//  C) cookies diferentes + IPs diferentes         → CRIA nova
+//  D) cookie ausente/inválido                     → CRIA nova (IP nunca é fallback)
+//  E) cookie aponta para Attribution inexistente  → CRIA nova (não quebra)
+//  F) cookie aponta para Attribution de outra oportunidade → ignora, CRIA nova
+//  G) cookie aponta para Attribution de outro distribuidor → NÃO reutiliza,
+//     CRIA nova válida (anti-manipulação de crédito)
+//
+// O ATACANTE NÃO PODE:
+// - criar atribuições para oportunidades inexistentes/rascunho/expiradas (404);
 // - descobrir códigos de referência válidos pelas respostas (400 uniforme);
-// - ler ou modificar o cookie via JavaScript (HttpOnly — servidor valida
-//   sempre o attributionId contra a base de dados no resgate);
+// - ler/modificar o cookie via JavaScript (HttpOnly);
+// - obter crédito para outro distribuidor com cookie forjado (validação
+//   tripla no banco: id + oportunidade + distribuidor);
 // - inundar a rota além do limite de taxa (429);
 // - injetar SQL (Prisma parametriza todas as consultas).
 
@@ -32,7 +45,6 @@ import { attributionSchema } from "@/lib/validators";
 import { getClientIp, rateLimit } from "@/lib/rate-limit";
 import {
   ATTR_COOKIE_MAX_AGE_SECONDS,
-  ATTR_DEDUPE_WINDOW_MS,
   ATTR_COOKIE_NAME,
   attrCookieOptions,
   parseAttrMap,
@@ -41,7 +53,8 @@ import {
 
 export const runtime = "nodejs";
 
-// Limite de taxa: 60 cliques por 10 minutos por IP
+// Limite de taxa: 60 cliques por 10 minutos por IP.
+// O IP LIMITA abuso — NUNCA decide identidade/desduplicação.
 const ATTR_MAX = 60;
 const ATTR_WINDOW_MS = 10 * 60 * 1000;
 
@@ -107,25 +120,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Referência inválida" }, { status: 400 });
   }
 
-  // 6) Desduplicação (mesmo IP + mesmo distribuidor + mesma oportunidade
-  //    dentro da janela de 7 dias → reutiliza o registo)
-  const dedupeSince = new Date(Date.now() - ATTR_DEDUPE_WINDOW_MS);
-  let attribution = await db.attribution.findFirst({
-    where: {
-      opportunityId: opportunity.id,
-      distributorId: distributor.id,
-      ip,
-      createdAt: { gte: dedupeSince },
-    },
-    select: { id: true },
-  });
+  // 6) DESDUPLICAÇÃO — EXCLUSIVAMENTE POR COOKIE (nunca por IP).
+  //    Lê o mapa e procura a entrada desta oportunidade.
+  const map = parseAttrMap(req.cookies.get(ATTR_COOKIE_NAME)?.value);
+  const cookieAttrId = map[opportunity.id];
 
+  // 7) Revalidação tripla no banco (não confiar cegamente no cliente):
+  //    a Attribution referenciada tem de existir E pertencer simultaneamente
+  //    a esta oportunidade E a este distribuidor.
+  let attribution: { id: string } | null = null;
+  if (cookieAttrId) {
+    attribution = await db.attribution.findFirst({
+      where: {
+        id: cookieAttrId,
+        opportunityId: opportunity.id,
+        distributorId: distributor.id,
+      },
+      select: { id: true },
+    });
+  }
+
+  // 8) Inválida/inexistente/ausente → cria nova Attribution.
+  //    (Casos B, C, D, E, F, G — o IP não entra na decisão.)
   if (!attribution) {
     attribution = await db.attribution.create({
       data: {
         opportunityId: opportunity.id,
         distributorId: distributor.id,
         source: "whatsapp", // canal primário de partilha dos distribuidores
+        // IP/UA: APENAS auditoria e rate limiting — nunca identidade.
         ip: ip.slice(0, 64),
         userAgent: req.headers.get("user-agent")?.slice(0, 255) ?? null,
       },
@@ -133,8 +156,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // 7) Atualiza o cookie-mapa (preserva entradas de outras oportunidades)
-  const map = parseAttrMap(req.cookies.get(ATTR_COOKIE_NAME)?.value);
+  // 9) Atualiza o cookie-mapa (preserva entradas de outras oportunidades).
   map[opportunity.id] = attribution.id;
 
   const res = NextResponse.json({ ok: true });

@@ -1,33 +1,41 @@
-// GOMBUONE — Fase 2 — POST /api/redemptions
+// GOMBUONE — Fase 2 (CORRIGIDA) — POST /api/redemptions
 //
 // Fluxo do consumidor: pede o código de resgate ANG-XXXX de uma oferta.
 //
-// COMPORTAMENTO:
-// 1. Valida o corpo (Zod): { opportunitySlug, consumerName, consumerWhatsapp }.
-// 2. A oportunidade tem de estar pública (ACTIVE + validade futura) — 404.
-// 3. A ATRIBUIÇÃO é derivada SEMPRE do cookie HttpOnly `gombu_attr`
-//    (mapa { opportunityId: attributionId }) e REVALIDADA na base de dados:
-//    o attributionId tem de existir E pertencer à mesma oportunidade.
-//    Cookie ausente/forjado/obsoleto → resgate direto (attributionId null,
-//    sem crédito a distribuidor). O cliente NUNCA envia attributionId.
-// 4. Um número de WhatsApp só pode ter UM código pendente (status REDEEMED)
-//    por oportunidade → 409 com mensagem genérica (sem revelar o código).
-// 5. Gera código criptográfico ANG-XXXX (charset sem ambiguidades) com
-//    constraint UNIQUE — colisões repetem a geração.
-// 6. Emite cookie anónimo `gombu_consumer` (UUID) guardado em consumerDevice
-//    (base para métricas/anti-fraude de fases posteriores).
+// POLÍTICA FINAL (fonte de verdade — comando mestre Fase 2):
+// 1. consumerName e consumerWhatsapp são OPCIONAIS (resgate sem nome e
+//    sem WhatsApp é permitido).
+// 2. O WhatsApp NUNCA é mecanismo de deduplicação/identidade.
+// 3. A identidade do consumidor é o cookie anónimo gombu_consumer (UUID v4
+//    gerado SEMPRE pelo servidor; nunca aceite do corpo JSON).
+// 4. Deduplicação/idempotência = (consumerDevice, opportunityId):
+//    - 1ª requisição → HTTP 201 + código ANG-XXXX
+//    - repetição (mesmo cookie + mesma oportunidade) → HTTP 200 com o MESMO
+//      código/status (nunca 409, nunca segundo código)
+// 5. Concorrência: duas requisições simultâneas para o mesmo par
+//    (consumerDevice, opportunityId) nunca geram dois códigos — o insert é
+//    serializado por pg_advisory_xact_lock dentro de uma transação, com
+//    re-checagem (e hardening opcional por índice único parcial — ver
+//    scripts/db-hardening.mjs).
+// 6. A Attribution é derivada SEMPRE do cookie HttpOnly gombu_attr e
+//    revalidada no banco (existe + mesma oportunidade). Inválida →
+//    attributionId = null e o resgate CONTINUA (nunca é bloqueado por
+//    cookie de atribuição inválido). O cliente NUNCA envia attributionId.
+// 7. Rate limiting por IP (20/h) — o IP limita abuso, nunca decide
+//    identidade.
 //
-// O ATACANTE NÃO PODE (regras testáveis — ver testes 24–33 e 34–45):
-// - escolher nem prever o código (gerado no servidor com aleatoriedade
-//   criptográfica — nunca aceito do cliente);
-// - resgatar em nome da atribuição de outrem: o crédito só sai do cookie
-//   HttpOnly validado no servidor (portador do cookie = portador do crédito,
-//   modelo documentado para a anti-fraude da Fase 3);
-// - usar a resposta 409 para descobrir o código já emitido (mensagem genérica);
-// - listar resgates de outros consumidores (não existe endpoint de listagem —
-//   GET devolve 405);
-// - inundar a rota além do limite de taxa (429);
-// - guardar payloads XSS no nome (charset restrito a letras/espaços).
+// O ATACANTE NÃO PODE:
+// - escolher nem prever o código (crypto.randomInt no servidor; UNIQUE na BD
+//   com retry em colisão P2002);
+// - escolher a própria identidade (consumerDevice só vem do cookie HttpOnly
+//   validado como UUID v4; lixo → nova identidade gerada no servidor);
+// - injetar campos server-side via corpo (Zod descarta chaves desconhecidas:
+//   code, status, attributionId, consumerDevice, id são ignorados);
+// - resgatar em nome da atribuição de outrem (o crédito só sai do cookie
+//   HttpOnly revalidado no servidor);
+// - listar resgates (GET → 405; não existe endpoint de listagem pública);
+// - inundar a rota (429);
+// - guardar payloads XSS no nome (charset restrito quando fornecido).
 
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
@@ -41,17 +49,25 @@ import {
   CONSUMER_COOKIE_MAX_AGE,
   CONSUMER_COOKIE_NAME,
   consumerCookieOptions,
+  isValidConsumerId,
   parseAttrMap,
 } from "@/lib/attribution";
 
 export const runtime = "nodejs";
 
-// Limite de taxa: 20 resgates por hora por IP
+// Limite de taxa: 20 resgates por hora por IP.
+// O IP LIMITA abuso — NUNCA decide identidade/deduplicação.
 const RED_MAX = 20;
 const RED_WINDOW_MS = 60 * 60 * 1000;
 
-// Tentativas de geração em caso de colisão do código único
+// Tentativas de geração em caso de colisão do código único (P2002 em code)
 const CODE_ATTEMPTS = 5;
+
+/** Dados relevantes devolvidos ao consumidor (1ª vez e repetições). */
+type RedemptionPublic = {
+  code: string;
+  status: RedemptionStatus;
+};
 
 export async function POST(req: NextRequest) {
   // 1) Limite de taxa
@@ -75,7 +91,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3) Validação Zod
+  // 3) Validação Zod — consumerName/consumerWhatsapp OPCIONAIS;
+  //    chaves desconhecidas (code, status, consumerDevice, attributionId…)
+  //    são descartadas silenciosamente (anti mass-assignment).
   const parsed = redemptionSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -85,7 +103,7 @@ export async function POST(req: NextRequest) {
   }
   const { opportunitySlug, consumerName, consumerWhatsapp } = parsed.data;
 
-  // 4) Oportunidade pública (ACTIVE + validade futura)
+  // 4) Oportunidade pública (ACTIVE + validade futura) — 404 uniforme
   const opportunity = await db.opportunity.findFirst({
     where: {
       slug: opportunitySlug,
@@ -102,7 +120,9 @@ export async function POST(req: NextRequest) {
   }
 
   // 5) Atribuição: SEMPRE derivada do cookie HttpOnly e revalidada na BD.
-  //    Nunca confiar no valor do cookie — forjado/obsoleto → resgate direto.
+  //    Nunca confiar no valor do cookie — forjado/obsoleto/outro-oportunidade
+  //    → resgate direto (attributionId null, sem crédito). O resgate NUNCA é
+  //    bloqueado por cookie de atribuição inválido (spec §15).
   let attributionId: string | null = null;
   const map = parseAttrMap(req.cookies.get(ATTR_COOKIE_NAME)?.value);
   const cookieAttrId = map[opportunity.id];
@@ -116,76 +136,134 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // 6) Um único código pendente por (consumidor, oportunidade) → 409 genérico.
-  //    A mensagem NÃO revela o código existente (anti-enumeração).
+  // 6) Identidade anónima do consumidor — SEMPRE estabelecida pelo servidor:
+  //    o cookie só é aceite se for um UUID v4 válido; caso contrário (ausente,
+  //    incógnito, apagado, lixo forjado) o servidor gera uma NOVA identidade.
+  //    O corpo JSON nunca fornece consumerDevice (Zod descarta).
+  const rawConsumerCookie = req.cookies.get(CONSUMER_COOKIE_NAME)?.value;
+  const consumerDevice = isValidConsumerId(rawConsumerCookie)
+    ? (rawConsumerCookie as string)
+    : randomUUID();
+
+  // 7) IDEMPOTÊNCIA (consumerDevice + opportunityId):
+  //    repetição → HTTP 200 com o MESMO código (nunca 409, nunca 2º código).
   const existing = await db.redemption.findFirst({
-    where: {
-      consumerWhatsapp,
-      opportunityId: opportunity.id,
-      status: "REDEEMED",
-    },
-    select: { id: true },
+    where: { consumerDevice, opportunityId: opportunity.id },
+    select: { code: true, status: true },
   });
   if (existing) {
-    return NextResponse.json(
+    const res = NextResponse.json(
       {
-        error:
-          "Já existe um código ativo para este número nesta oferta. Utilize o código já recebido.",
-      },
-      { status: 409 }
-    );
-  }
-
-  // 7) Cookie anónimo do consumidor (para métricas de fases posteriores)
-  const consumerCookie =
-    req.cookies.get(CONSUMER_COOKIE_NAME)?.value ?? randomUUID();
-  const consumerDevice = consumerCookie.slice(0, 64);
-
-  // 8) Criação com geração de código único (repete em colisão rara)
-  let redemption: { code: string; status: RedemptionStatus } | null = null;
-  for (let attempt = 0; attempt < CODE_ATTEMPTS && !redemption; attempt++) {
-    try {
-      redemption = await db.redemption.create({
-        data: {
-          code: generateAngCode(),
-          opportunityId: opportunity.id,
-          attributionId,
-          consumerName,
-          consumerWhatsapp,
-          consumerDevice,
-          status: "REDEEMED", // emitido — aguarda validação do comerciante (Fase 3)
+        redemption: {
+          code: existing.code,
+          status: existing.status,
+          validUntil: opportunity.validUntil.toISOString(),
         },
-        select: { code: true, status: true },
-      });
-    } catch (e) {
-      const err = e as { code?: string };
-      if (err.code !== "P2002") {
-        // Erro inesperado (P2002 = colisão de código → tenta novamente)
-        console.error("[redemptions] Erro ao criar:", e);
-        return NextResponse.json(
-          { error: "Erro interno ao processar o resgate" },
-          { status: 500 }
-        );
-      }
-    }
+      },
+      { status: 200 }
+    );
+    res.cookies.set({
+      name: CONSUMER_COOKIE_NAME,
+      value: consumerDevice,
+      ...consumerCookieOptions(CONSUMER_COOKIE_MAX_AGE),
+    });
+    return res;
   }
-  if (!redemption) {
+
+  // 8) Criação com proteção de CONCORRÊNCIA:
+  //    pg_advisory_xact_lock serializa criadores simultâneos do mesmo par
+  //    (consumerDevice, opportunityId) — o perdedor da corrida re-checa,
+  //    encontra o resgate do vencedor e devolve 200 com o mesmo código.
+  //    Geração do código com retry em colisão P2002 (UNIQUE(code)).
+  let outcome:
+    | { created: true; redemption: RedemptionPublic }
+    | { created: false; redemption: RedemptionPublic }
+    | null = null;
+  try {
+    outcome = await db.$transaction(
+      async (tx) => {
+        // Mutex por par (dispositivo, oportunidade) — hash de 32 bits;
+        // colisões de hash apenas serializam mais, nunca afetam correção.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${consumerDevice}), hashtext(${opportunity.id}))`;
+
+        // Re-checagem DENTRO do lock+transação (vencedores concorrentes)
+        const raced = await tx.redemption.findFirst({
+          where: { consumerDevice, opportunityId: opportunity.id },
+          select: { code: true, status: true },
+        });
+        if (raced) {
+          return { created: false as const, redemption: raced };
+        }
+
+        for (let attempt = 0; attempt < CODE_ATTEMPTS; attempt++) {
+          try {
+            const created = await tx.redemption.create({
+              data: {
+                code: generateAngCode(),
+                opportunityId: opportunity.id,
+                attributionId,
+                consumerName: consumerName ?? null,
+                consumerWhatsapp: consumerWhatsapp ?? null,
+                consumerDevice,
+                status: "REDEEMED", // emitido — aguarda validação (Fase 3)
+              },
+              select: { code: true, status: true },
+            });
+            return { created: true as const, redemption: created };
+          } catch (e) {
+            const err = e as {
+              code?: string;
+              meta?: { target?: string[] | string };
+            };
+            if (err.code !== "P2002") throw e; // erro inesperado → 500
+            // P2002 em `code` → colisão de código: regenera e tenta de novo.
+            // P2002 em (consumerDevice, opportunityId) (índice parcial de
+            // hardening, se aplicado) → criado concorrentemente: re-checa.
+            const target = Array.isArray(err.meta?.target)
+              ? err.meta.target.join(",")
+              : String(err.meta?.target ?? "");
+            if (target.includes("consumerDevice") || target.includes("consumer")) {
+              const raced2 = await tx.redemption.findFirst({
+                where: { consumerDevice, opportunityId: opportunity.id },
+                select: { code: true, status: true },
+              });
+              if (raced2) {
+                return { created: false as const, redemption: raced2 };
+              }
+            }
+            // colisão de código → próxima tentativa
+          }
+        }
+        throw new Error("CODE_EXHAUSTED");
+      },
+      { timeout: 10_000 }
+    );
+  } catch (e) {
+    const err = e as { message?: string };
+    if (err.message === "CODE_EXHAUSTED") {
+      return NextResponse.json(
+        { error: "Não foi possível gerar um código único. Tente novamente." },
+        { status: 500 }
+      );
+    }
+    console.error("[redemptions] Erro ao criar:", e);
     return NextResponse.json(
-      { error: "Não foi possível gerar um código único. Tente novamente." },
+      { error: "Erro interno ao processar o resgate" },
       { status: 500 }
     );
   }
 
-  // 9) Resposta + cookie do consumidor
+  // 9) Resposta: 201 (criado) ou 200 (já existia/criado concorrentemente) —
+  //    sempre o MESMO código para o mesmo (dispositivo, oportunidade).
   const res = NextResponse.json(
     {
       redemption: {
-        code: redemption.code,
-        status: redemption.status,
+        code: outcome.redemption.code,
+        status: outcome.redemption.status,
         validUntil: opportunity.validUntil.toISOString(),
       },
     },
-    { status: 201 }
+    { status: outcome.created ? 201 : 200 }
   );
   res.cookies.set({
     name: CONSUMER_COOKIE_NAME,

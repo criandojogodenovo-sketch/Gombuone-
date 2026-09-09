@@ -9,7 +9,8 @@
 // - O attributionId NUNCA passa pelo cliente: o servidor cria o registo e
 //   escreve o cookie HttpOnly. Este componente só envia o código público.
 // - Guarda em sessionStorage evita POSTs repetidos na mesma sessão
-//   (a desduplicação real acontece no servidor, por IP).
+//   (a desduplicação REAL acontece no servidor, via cookie gombu_attr —
+//   mesmo cookie + mesma oportunidade → mesma Attribution).
 // - Silencioso por design: falhas de atribuição nunca quebram a navegação
 //   nem revelam se o código era válido (a resposta é uniforme).
 
@@ -32,7 +33,7 @@ export default function RefTracker({
       sessionStorage.setItem(storageKey, "1");
     } catch {
       // sessionStorage indisponível (modo privado) — segue com o POST;
-      // o servidor desduplica por IP de qualquer forma.
+      // o servidor desduplica por cookie de qualquer forma.
     }
 
     const controller = new AbortController();

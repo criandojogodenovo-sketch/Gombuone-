@@ -33,3 +33,6 @@ yarn-error.log*
 
 # prisma
 prisma/*.db
+
+# banco de testes local (PostgreSQL embutido)
+.localpg/

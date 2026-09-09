@@ -99,16 +99,19 @@ model Attribution {
   source         String?     // "whatsapp", "direct", "instagram"
   // deviceFingerprint removido — reintrodução adiada para fase posterior
 
-  // FASE 2: contexto do clique capturado NO SERVIDOR (nunca confiado ao cliente)
-  ip             String?     // IP de origem (x-forwarded-for definido pela infraestrutura)
-  userAgent      String?     // User-Agent do pedido
+  // FASE 2: contexto do clique capturado NO SERVIDOR (nunca confiado ao cliente).
+  // CORREÇÃO FASE 2: ip/userAgent são APENAS auditoria e rate limiting —
+  // o IP NUNCA é usado como identidade/desduplicação (o cookie gombu_attr
+  // é o único mecanismo de dedup; ver /api/attributions).
+  ip             String?     // IP de origem (x-forwarded-for da infraestrutura) — auditoria
+  userAgent      String?     // User-Agent do pedido — auditoria
 
   createdAt      DateTime    @default(now())
 
   redemptions    Redemption[]
 
-  @@index([opportunityId, distributorId, ip, createdAt])
   @@index([distributorId, createdAt])
+  @@index([opportunityId, createdAt])
 }
 
 model Redemption {
@@ -120,10 +123,17 @@ model Redemption {
   attributionId  String?
   attribution    Attribution?     @relation(fields: [attributionId], references: [id])
 
+  // CORREÇÃO FASE 2: identidade anónima do consumidor (UUID v4 do cookie
+  // HttpOnly gombu_consumer, gerado SEMPRE pelo servidor). A deduplicação/
+  // idempotência da Redemption V1 é (consumerDevice, opportunityId):
+  // 1ª requisição → 201; repetição → 200 com o MESMO código (nunca 409).
+  // Hardening adicional em scripts/db-hardening.mjs: índice ÚNICO PARCIAL
+  // (consumerDevice, opportunityId) WHERE consumerDevice IS NOT NULL.
   consumerDevice String?
 
   // FASE 2: identificação do consumidor no ato do resgate (para o comerciante
-  // validar na Fase 3 e para limites anti-abuso)
+  // validar na Fase 3) — OPCIONAIS e NUNCA usados para deduplicação
+  // (o WhatsApp não é mecanismo de identidade na V1).
   consumerName      String?
   consumerWhatsapp  String?
 
@@ -134,6 +144,7 @@ model Redemption {
 
   validation     Validation?
 
+  @@index([consumerDevice, opportunityId])
   @@index([consumerWhatsapp])
   @@index([opportunityId, status])
 }

@@ -121,23 +121,42 @@ export const WHATSAPP_PATTERN = /^\+2449\d{8}$/;
 // comerciante na Fase 3, por isso o charset é restrito à escrita de nomes.
 export const CONSUMER_NAME_PATTERN = /^[\p{L}\p{M}\s'.-]{2,60}$/u;
 
+/**
+ * CORREÇÃO FASE 2 (política final): consumerName e consumerWhatsapp são
+ * OPCIONAIS — o consumidor pode resgatar sem nome e sem WhatsApp.
+ * String vazia/null → undefined (campo ausente). Quando presentes, são
+ * validados com rigor.
+ * O WhatsApp NUNCA é mecanismo de deduplicação (a identidade é o cookie
+ * anónimo gombu_consumer — ver /api/redemptions).
+ */
+const emptyToUndefined = (v: unknown) =>
+  v === null || (typeof v === "string" && v.trim() === "") ? undefined : v;
+
 export const redemptionSchema = z.object({
   opportunitySlug: z
     .string()
     .trim()
     .regex(SLUG_PATTERN, "Slug da oportunidade inválida"),
-  consumerName: z
-    .string()
-    .trim()
-    .regex(
-      CONSUMER_NAME_PATTERN,
-      "Nome inválido: use apenas letras, espaços, apóstrofos, hífens e pontos (2–60 caracteres)"
-    ),
-  consumerWhatsapp: z
-    .string()
-    .trim()
-    .regex(
-      WHATSAPP_PATTERN,
-      "WhatsApp inválido: use o formato angolano +2449XXXXXXXX (ex.: +244923456789)"
-    ),
+  consumerName: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .trim()
+      .regex(
+        CONSUMER_NAME_PATTERN,
+        "Nome inválido: use apenas letras, espaços, apóstrofos, hífens e pontos (2–60 caracteres)"
+      )
+      .optional()
+  ),
+  consumerWhatsapp: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .trim()
+      .regex(
+        WHATSAPP_PATTERN,
+        "WhatsApp inválido: use o formato angolano +2449XXXXXXXX (ex.: +244923456789)"
+      )
+      .optional()
+  ),
 });

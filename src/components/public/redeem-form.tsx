@@ -21,7 +21,7 @@ type Result =
   | { kind: "idle" }
   | { kind: "submitting" }
   | { kind: "error"; message: string }
-  | { kind: "success"; code: string; validUntil: string };
+  | { kind: "success"; code: string; validUntil: string; repeated?: boolean };
 
 export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
   const [name, setName] = useState("");
@@ -33,14 +33,17 @@ export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
     e.preventDefault();
     setResult({ kind: "submitting" });
     try {
+      // Nome e WhatsApp são OPCIONAIS (política Fase 2): só enviamos campos
+      // preenchidos — o servidor deduplica por cookie anónimo, nunca por
+      // WhatsApp, e nunca envia 409 (repetição → 200 com o mesmo código).
+      const payload: Record<string, string> = { opportunitySlug };
+      if (name.trim()) payload.consumerName = name.trim();
+      if (whatsapp.trim()) payload.consumerWhatsapp = whatsapp.trim();
+
       const res = await fetch("/api/redemptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          opportunitySlug,
-          consumerName: name,
-          consumerWhatsapp: whatsapp,
-        }),
+        body: JSON.stringify(payload),
         credentials: "same-origin",
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -61,10 +64,13 @@ export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
         });
         return;
       }
+      // 201 (novo) e 200 (repetição idempotente com o MESMO código) são
+      // ambos sucesso para o consumidor.
       setResult({
         kind: "success",
         code: data.redemption.code,
         validUntil: data.redemption.validUntil,
+        repeated: res.status === 200,
       });
     } catch {
       setResult({
@@ -148,19 +154,19 @@ export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
         Resgatar esta oferta
       </h2>
       <p className="mt-1 text-sm leading-relaxed text-stone-600">
-        Preencha os seus dados para receber o código de resgate (formato
-        ANG-XXXX) e apresente-o no estabelecimento.
+        Peça o seu código de resgate (formato ANG-XXXX) e apresente-o no
+        estabelecimento. Sem registo de conta — nome e WhatsApp são
+        opcionais.
       </p>
 
       <div className="mt-5 space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="consumer-name">Nome</Label>
+          <Label htmlFor="consumer-name">Nome (opcional)</Label>
           <Input
             id="consumer-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="O seu nome"
-            required
             minLength={2}
             maxLength={60}
             autoComplete="name"
@@ -168,14 +174,13 @@ export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
           />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="consumer-whatsapp">WhatsApp</Label>
+          <Label htmlFor="consumer-whatsapp">WhatsApp (opcional)</Label>
           <Input
             id="consumer-whatsapp"
             value={whatsapp}
             onChange={(e) => setWhatsapp(e.target.value)}
             placeholder="+244923456789"
             inputMode="tel"
-            required
             pattern="\+2449[0-9]{8}"
             title="Formato angolano: +2449XXXXXXXX"
             autoComplete="tel"
@@ -196,7 +201,7 @@ export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
 
       <Button
         type="submit"
-        disabled={submitting || name.trim().length < 2 || whatsapp.length < 13}
+        disabled={submitting}
         className="mt-5 h-11 w-full bg-emerald-600 text-base text-white hover:bg-emerald-700"
       >
         {submitting ? (
@@ -209,8 +214,8 @@ export default function RedeemForm({ opportunitySlug }: RedeemFormProps) {
         )}
       </Button>
       <p className="mt-3 text-center text-xs text-stone-500">
-        Sem registo de conta — apenas o seu nome e WhatsApp para validar a
-        oferta no estabelecimento.
+        Sem registo de conta — o código fica associado a este navegador;
+        pedir de novo devolve o mesmo código.
       </p>
     </form>
   );

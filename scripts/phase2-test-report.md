@@ -1,39 +1,44 @@
-# Relatório de testes da Fase 2 (execução local — 2026-09-08T19:44:26.817Z)
+# Relatório de testes da Fase 2 CORRIGIDA (execução local — 2026-09-09T11:31:42.548Z)
 
-Alvo: http://localhost:3100
+Alvo: http://localhost:3100 (execução local com banco real — PostgreSQL embutido)
 
-- **TESTE 13** [PASS] POST /api/attributions válido cria linha e emite cookie — status=200 attr=cmtt2ua4g0001oknqxfqe4r9k
-- **TESTE 14** [PASS] Cookie = mapa JSON por opportunityId; HttpOnly+Secure+SameSite=Lax+Path=/+Max-Age=30d — mapa=ok flags=ok
-- **TESTE 15** [PASS] Repetição (mesmo IP+ref) não duplica linha; cookie estável — antes=1 depois=1
-- **TESTE 16** [PASS] Multi-oportunidade: mapa preserva AMBAS as entradas (sem sobreposição) — entradas=2
-- **TESTE 17** [PASS] Ref inexistente → 400 uniforme (anti-enumeração), sem linha/cookie — status=400
-- **TESTE 18** [PASS] Oportunidade DRAFT rejeitada (404) — status=404
-- **TESTE 19** [PASS] Oportunidade expirada rejeitada (404) — status=404
-- **TESTE 20** [PASS] Oportunidade inexistente rejeitada (404) — status=404
-- **TESTE 21** [PASS] Corpos malformados → 400 (JSON, campos, charsets) — json-inválido:400 sem-ref:400 ref-ilegal:400 ref-com-simbolos:400 slug-ilegal:400
-- **TESTE 22** [PASS] Página /oportunidades/[slug] renderiza (com e sem ?ref=) — com-ref=200 sem-ref=200
-- **TESTE 23** [PASS] Visita sem ?ref= não cria linhas de atribuição — antes=2 depois=2
-- **TESTE 24** [PASS] POST /api/redemptions com cookie → 201 + código + cookie consumidor — status=201 código=ANG-2QSJ
-- **TESTE 25** [PASS] Formato do código ^ANG-[A-HJ-NP-Z2-9]{4}$ (sem 0/O/1/I) — código=ANG-2QSJ
-- **TESTE 26** [PASS] Redemption vinculado à atribuição TESTREF01 (status REDEEMED, dados guardados) — attribution=cmtt2ua4g0001oknqxfqe4r9k
-- **TESTE 27** [PASS] Multi-oportunidade: código distinto e vínculo TESTREF02 — código=ANG-A3YD
-- **TESTE 28** [PASS] Resgate direto (sem cookie) → 201 com attributionId null — status=201 attribution=-
-- **TESTE 29** [PASS] Cookie forjado revalidado no servidor → resgate direto (sem crédito falso) — status=201
-- **TESTE 30** [PASS] Resgate de oportunidade expirada → 404 — status=404
-- **TESTE 31** [PASS] Dados do consumidor inválidos → 400 (formato, XSS, ausência) — whatsapp-mal:400 whatsapp-letras:400 nome-curto:400 nome-tags:400 sem-campos:400
-- **TESTE 32** [PASS] Duplicado → 409, sem segundo código — status=409
-- **TESTE 33** [PASS] consumerDevice (UUID do cookie anónimo) persistido — device=4a60da5d-c5ea...
-- **TESTE 34** [PASS] Spam de atribuição: 429 a partir do 61º; desduplicação segura a linha — primeiro-429=61 linhas=1
-- **TESTE 35** [PASS] Spam de resgate: 429 a partir do 21º — primeiro-429=21 criados=20
-- **TESTE 36** [PASS] SQL injection → 400 uniforme; BD intacta (Prisma parametrizado) — estados=[400,400,400,400,400] oportunidades=7
-- **TESTE 37** [PASS] XSS no nome → 400 (charset de nomes) e nada guardado — status=400
-- **TESTE 38** [PASS] Payloads oversized → 400; servidor continua de pé — estados=[400,400,400] home=200
-- **TESTE 39** [PASS] Mapa forjado (múltiplas entradas) → resgate direto, sem créditos falsos — status=201 attribution=-
-- **TESTE 40** [PASS] Sem enumeração: GET públicos 405; admin sem sessão 401; /admin redireciona — attr=405 red=405 admin=401 /admin=307
-- **TESTE 41** [PASS] Nenhum segredo em .next/static nem no HTML (ficheiros: 30) — limpo
-- **TESTE 42** [PASS] 1000 códigos: charset válido, não-sequencial, colisões dentro do esperado (≤5; unicidade garantida pela BD) — únicos=1000/1000 colisões=0 posições=32/32/32/32
-- **TESTE 43** [PASS] POST /api/admin/opportunities sem sessão → 401; nada criado — status=401
-- **TESTE 44** [PASS] Resposta 409 genérica — não revela o código já emitido — status=409 vazamento=false
-- **TESTE 45** [PASS] Login admin com senha ROTACIONADA → sessão emitida — status=200 sessão=emitida
+- **TESTE A1** [PASS] Caso A: mesmo cookie + mesma oportunidade → reutiliza a MESMA Attribution — attr=9gzke6nu repetida=true linhas=1
+- **TESTE A2** [PASS] Caso B: cookie ausente + mesmo IP → CRIA nova Attribution (IP nunca deduplica) — antes=1 depois=2 status=200
+- **TESTE A3** [PASS] Multi-oportunidade: mapa do cookie preserva AMBAS as entradas — entradas=2 opp2-linhas=1
+- **TESTE A4** [PASS] Cookie corrompido (3 variantes) → 200, cria Attribution válida, reseta cookie — variantes-ok=3/3 linhas=3→6
+- **TESTE A5** [PASS] Caso F: cookie aponta para Attribution de outra oportunidade → NÃO reutiliza — nova-linha=true original-intacta=true
+- **TESTE A6** [PASS] Caso G: cookie aponta para Attribution de outro distribuidor → NÃO reutiliza (anti-manipulação) — nova-linha=true credito-original-intacto=true
+- **TESTE A7** [PASS] Cookie ausente → nova Attribution; IP gravado APENAS como auditoria — linhas=8→9 ip-audit=presente
+- **TESTE B1** [PASS] Redemption SEM WhatsApp → 201 (campo opcional) — status=201 código=ANG-MH58 whatsapp-null=true
+- **TESTE B2** [PASS] Redemption SEM nome → 201; sem nome E sem WhatsApp → 201 — sem-nome=201 sem-ambos=201 nome-null=true
+- **TESTE B3** [PASS] Mesmo consumerDevice + mesma oportunidade: 1ª=201, 2ª=200, MESMO código, 1 linha — status=201/200 código=ANG-LYNY/ANG-LYNY iguais=true linhas=1
+- **TESTE B4** [PASS] Mesmo WhatsApp + cookies diferentes → duas Redemptions permitidas (201+201) — status=201/201 códigos=ANG-TLXT/ANG-VMZ7 linhas=2
+- **TESTE B5** [PASS] Cookie do consumidor apagado → nova identidade, nova Redemption (201) — status=201/201 nova-identidade=true
+- **TESTE B6** [PASS] Cookie de Attribution forjado/inexistente/outra-oportunidade → resgate segue, attributionId=null — v1=201/null=true v2=201/null=true
+- **TESTE B7** [PASS] Código ANG-XXXX: formato, sem 0/O/1/I, único na BD; gerador cobre 32 chars — bd=10 únicos-bd=true ambíguos=false amostras=1000/1000 (colisão estatística esperada ≤5) charset=true posições=32/32/32/32
+- **TESTE C1** [PASS] 2 requisições simultâneas (mesmo device+opportunidade) → 1 código, 1 linha — status=200,201 código=ANG-WCQW linhas=1
+- **TESTE C2** [PASS] 5 requisições simultâneas → exatamente 1 criação (201), restantes 200, mesmo código — criações-201=1 linhas=1 código=ANG-CYM5
+- **TESTE S1** [PASS] Rate limit Attribution: 60 pedidos/10 min/IP → 429 no 61º — primeiro-429=61
+- **TESTE S2** [PASS] Rate limit Redemption: 20/h/IP → 429 no 21º (com Retry-After) — primeiro-429=21 retry-after=true
+- **TESTE S3** [PASS] SQL injection → 400 uniforme (Prisma parametrizado); banco intacto — estados=[400,400,400,400,400] oportunidades=3→3
+- **TESTE S4** [PASS] XSS em nome/whatsapp → 400; nada persistido — nome=400 whatsapp=400 linhas=32→32
+- **TESTE S5** [PASS] Payloads oversized → 400; servidor continua de pé — nome-10k=400 corpo-1mb=400 home=200
+- **TESTE S6** [PASS] Mass assignment (code/status/id/attributionId/consumerDevice no corpo) → ignorados — status=201 código=ANG-X64H status-bd=REDEEMED device=01903085…
+- **TESTE S7** [PASS] Cookie gombu_consumer forjado (não-UUID) → servidor gera identidade própria — status=201 identidade=34319cce… válida=true
+- **TESTE S8** [PASS] GET públicos → 405; admin sem sessão → 401; /admin → redirect login — attr=405 red=405 admin-api=401 /admin=307 login=200
+- **TESTE S9** [PASS] Oportunidades draft/expirada/inexistente → 404 uniforme (sem distinguir) — attr=[404,404,404] red=[404,404,404] corpos-únicos=1/1 linhas=0
+- **TESTE S10** [PASS] Ref inexistente/malformado → 400 uniforme; nenhuma linha criada — inexistente=400 malformado=400 linhas=71→71
+- **TESTE S11** [PASS] Cookies: HttpOnly + SameSite=Lax + Path=/ + Max-Age + Secure(produção) — attr=httpOnly:ok lax:ok path:ok secure:ok 30d=true | consumer=httpOnly:ok lax:ok path:ok secure:ok 1a=true
+- **TESTE S12** [PASS] Segredos (senha admin, DATABASE_URL) ausentes do bundle cliente e do HTML — ficheiros=30 limpo
+- **TESTE S13** [PASS] HTML da página pública sem IDs internos (attribution/consumer/distribuidor) — limpo
+- **TESTE P1** [PASS] Página pública: 200 com/sem ?ref=; draft → 404 — com-ref=200 sem-ref=200 draft=404
+- **TESTE P2** [PASS] Visita sem ?ref= (página e home) não cria Attribution — antes=72 depois=72
+- **TESTE P3** [PASS] Login admin emite sessão (senha errada → 401); logout limpa o cookie — login=200 sessão=emitida senha-errada=401 logout=200 cookie-limpo=true
 
-**TOTAL: 33 | PASS: 33 | FAIL: 0**
+**TOTAL: 32 | PASS: 32 | FAIL: 0**
+
+Política testada: Attribution dedup exclusivamente por cookie (IP nunca);
+Redemption idempotente por (consumerDevice, opportunityId) — 201/200, nunca 409;
+consumerName/consumerWhatsapp opcionais (WhatsApp nunca deduplica);
+concorrência serializada (advisory lock + índice único parcial);
+rate limiting, anti-enumeração, anti-mass-assignment e anti-XSS verificados.
